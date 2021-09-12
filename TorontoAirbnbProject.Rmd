@@ -1,0 +1,274 @@
+---
+title: "Toronto Airbnb Project"
+author: "Ritik Sharma"
+date: "21/07/2021"
+output: html_document
+---
+![](airbnb_logo.jpeg)
+
+### Introduction
+In this project, I will be analyzing data on Airbnb listings in Toronto. First, I plan on gaining basic insights about the dataset. This would include information such as the average cost of renting an Airbnb in Toronto. I will also find information about Airbnbs with certain conditions. Next, I will be finding a solution to a hypothetical scenario. The scenario is that my friends and I (5 people in total) want to book an Airbnb in downtown Toronto for a 5 day vacation. During this trip, our goal is to visit as many Art galleries in downtown Toronto as we can. We have budgetary constraints. We do not want to spend more than 250$ a night collectively. We also need at least 2 bathrooms. Finally, we want to find an Airbnb which is close to all of the art galleries.  
+
+#### INSTALLING PACKAGES
+```{r, message=FALSE, warning=FALSE}
+# install.packages("rtools")
+# install.packages("tidyverse")
+# install.packages("sf")
+# install.packages("lwgeom")
+# install.packages("mapboxapi")
+# install.packages("leaflet")
+# install.packages("reshape2")
+# install.packages("geojsonio")
+```
+
+
+#### LOADING LIBRARIES
+```{r, message=FALSE, warning=FALSE}
+library("tidyverse")
+library("sf")
+library("lwgeom")
+library("mapboxapi")
+library("leaflet")
+library("reshape2")
+library("geojsonio")
+```
+
+
+#### IMPORTING NON-SPATIAL DATA
+```{r, message=FALSE, warning=FALSE}
+listings <- read_csv("toronto-listings.csv")
+```
+
+
+### Data Cleaning
+```{r, message=FALSE, warning=FALSE}
+# Changing price from character to numeric
+listings$price <- substring(listings$price, 2, nchar(listings$price)-3) 
+listings$price <- as.numeric(listings$price) 
+
+# Creating a new variable for number of bathrooms
+listings <- listings %>% 
+  mutate(bathrooms = as.numeric(str_split_fixed(listings$bathrooms_text, " b", 2)[,1])) %>% 
+  # Filtering out na room types and only keeping listings which are an entire apartment/home
+  filter(!is.na(room_type) & room_type == "Entire home/apt") 
+```
+
+
+### Data Analysis
+```{r}
+# Checking for the most popular neighborhood
+most_frequent <- listings %>%
+  group_by(neighbourhood_cleansed) %>%
+  summarise(neighbourhood_count = n()) %>%
+  filter(neighbourhood_count == max(neighbourhood_count))
+```
+The most popular neighborhood in Toronto according to number of listings is `r most_frequent$neighbourhood_cleansed`. 
+
+Some Airbnbs require you to rent the space for 2 or more nights. I will create a new variable in the listings dataframe to represent the minimum amount of money needed to rent the Airbnb. This variable will be named  total_cost. Additionally, I removed NA values from the total_cost column.
+
+```{r}
+# Finding the minimum amount of money to be paid for the listings 
+listings <- listings %>%
+  mutate(total_cost = price * minimum_nights) %>%
+  filter(!is.na(total_cost))
+```
+
+
+Finding the mean and median costs of the Airbnbs in Toronto which follow the criteria below: <br />
+* Minimum number of nights is equal to or less than 3 <br />
+* Number of bathrooms is equal to two or more
+
+```{r}
+# Applying the given criteria to the listings dataframe
+bath2night3 <- listings %>%
+  filter(bathrooms >= 2 & minimum_nights <= 3)
+# Calculating the mean cost of the Airbnbs satisfying the given criteria
+mean_costs <- bath2night3 %>%
+  select(total_cost) %>%
+  summarise(mean_cost = mean(total_cost)) %>%
+  round(digits = 1)
+# Calculating the median cost of the Airbnbs satisfying the given criteria
+median_costs <- bath2night3 %>%
+  select(total_cost) %>%
+  summarise(median_cost = median(total_cost)) %>%
+  round(digits = 1)
+```
+
+The average cost of an Airbnb in Toronto with a minimum of 3 or fewer nights is **`r mean_costs`** and the median cost is **`r median_costs`**
+
+The mean price of Airbnb listings in Toronto is 482.1. The median price of Airbnb listings in Toronto is 387. The mean is higher than the median in this case. This means that there are outliers and the data is positively skewed. In the context of this data, there are multiple Airbnbs in Toronto whose total cost is high. These Airbnbs are outliers and they are increasing the mean of the total cost of an Airbnb in Toronto.
+
+
+Here, I will calculate the interquartile range of the total cost of Airbnbs that only require 1 night.
+
+```{r}
+oneNightListings <- listings %>%
+  filter(listings$minimum_nights == 1)
+iqr <- oneNightListings %>%
+  summarise(iqr_25 = quantile(total_cost, 0.25), iqr_75 = quantile(total_cost, 0.75))
+```
+
+The interquartile range of total cost for one-night minimum Airbnbs in Toronto is **`r iqr$iqr_25 ` to `r iqr$iqr_75`**.
+
+
+
+
+Boxplot of total cost of Airbnbs that only require 1 night
+
+```{r}
+ggplot(oneNightListings, aes(x = 0, y = total_cost)) + 
+  geom_boxplot(fill='#A4A4A4', color="black", outlier.color = "red") +
+  labs(title = "Toronto Listings", y = "Total Cost of Airbnb") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+The interquartile range of the listings that only require 1 night tells us the middle 50% of the data lies between 86 and 170.25. Half of these listings have a total cost ranging from 86 to 170.25. There are outliers that can be seen on on the boxplot as there are data points outside of the whiskers of the boxplot. These are highlighted in red. The boxplot is positively skewed which entails a higher mean than median. The median lies in the lower half of the IQR which makes sense as the mean is higher than the median.
+
+
+### Spatial Analysis
+
+#### IMPORTING SPATIAL DATA
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# IMPORT AND CONVERT DATA
+ls <- st_as_sf(listings, coords = c("longitude", "latitude"), crs = 4326) # Toronto Airbnb listings, ls = listings spatial
+ls <- st_transform(ls, crs = 32617)
+
+nbs <- st_read("toronto-neighbourhoods.geojson", crs = 4326) # Toronto neighbourhoods, nb = neighbourhoods
+nbs <- st_transform(nbs, crs = 32617)
+nbs_sp <- geojson_read("toronto-neighbourhoods.geojson", what = "sp") # Used for mapping
+
+poi <- st_read("Places-of-Interest-and-Attractions.geojson") # Points of Interest in Toronto, poi = Points of Interest
+
+poi_m <- st_transform(poi, crs = 32617) # poi_m = Points of Interest in meters
+
+# CREATE LAT/LON COLUMNS
+ls$coords <- as.character(ls$geometry)
+ls$coords <- substring(ls$coords, 3, nchar(ls$coords)-1)
+ls <- ls %>%
+  mutate(longitude = as.numeric(str_split_fixed(ls$coords, ", ", 2)[,1]),
+         latitude = as.numeric(str_split_fixed(ls$coords, ", ", 2)[,2]))
+
+poi$coords <- as.character(poi$geometry)
+poi$coords <- substring(poi$coords, 3, nchar(poi$coords)-1)
+poi <- poi %>%
+  mutate(longitude = as.numeric(str_split_fixed(poi$coords, ", ", 2)[,1]),
+         latitude = as.numeric(str_split_fixed(poi$coords, ", ", 2)[,2]))
+
+poi_m$coords <- as.character(poi_m$geometry)
+poi_m$coords <- substring(poi_m$coords, 3, nchar(poi_m$coords)-1)
+poi_m <- poi_m %>%
+  mutate(longitude_m = as.numeric(str_split_fixed(poi_m$coords, ", ", 2)[,1]),
+         latitude_m = as.numeric(str_split_fixed(poi_m$coords, ", ", 2)[,2]))
+
+
+nbs$coords <- as.character(nbs$geometry)
+nbs$coords <- substring(nbs$coords, 3, nchar(nbs$coords)-1)
+nbs <- nbs %>%
+  mutate(longitude = as.numeric(str_split_fixed(nbs$coords, ", ", 2)[,1]),
+         latitude = as.numeric(str_split_fixed(nbs$coords, ", ", 2)[,2]))
+```
+
+
+We wanted to rent an Airbnb in Toronto for 5 nights to spend some time in the city and visit Toronto's museums. We wanted to pay no more than $250/night (collectively). The Airbnb we are planning on getting must have at least 2 bathrooms, and the Airbnb must accommodate 5 or more people.
+
+```{r}
+# Airbnb dataframe fitting our criteria
+abnb_tor <- listings %>%
+  filter(bathrooms >= 2 & price <= 250 & accommodates >= 5, minimum_nights <= 5)
+
+```
+
+We also wanted to stay in a neighbourhood that is in the middle of art gallery locations in the city, so we are located centrally. 
+
+
+```{r}
+# FILTER THE POINTS OF INTEREST
+galleries <- poi %>%
+  filter(CATEGORY == "Gallery")
+
+```
+
+
+```{r}
+# CREATING POINT MARKERS TO MAP POINTS
+
+# AIRBNBs
+airbnbIcon <- makeIcon(
+  iconUrl = "https://www.freeiconspng.com/uploads/-is-brought-to-you-by-swiftcoverm---for-super-fast-home-insurance-18.png",
+  iconWidth = 15, iconHeight = 15,
+  iconAnchorX = 7.5, iconAnchorY = 7.5 # Anchor in reference to top-left corner of image, top-left corner = 0,0
+)
+
+# ART GALLERIES
+agIcon <- makeIcon(
+  iconUrl = "https://icon-library.com/images/gallery-icon-png/gallery-icon-png-10.jpg",
+  iconWidth = 20, iconHeight = 20,
+  iconAnchorX = 10, iconAnchorY = 10 # Anchor in reference to top-left corner of image, top-left corner = 0,0
+)
+
+# MEAN CENTRE
+mcIcon <- makeIcon(
+  iconUrl = "https://emojipedia-us.s3.dualstack.us-west-1.amazonaws.com/thumbs/120/twitter/281/direct-hit_1f3af.png",
+  iconWidth = 20, iconHeight = 20,
+  iconAnchorX = 10, iconAnchorY = 10 # Anchor in reference to top-left corner of image, top-left corner = 0,0
+)
+
+```
+
+
+```{r}
+# CREATING THE LEAFLET MAP
+leaflet(data = poi) %>%
+  
+  # ADDING THE BASE MAP
+addProviderTiles(providers$OpenStreetMap.DE) %>%
+  
+# SETTING FIRST VIEW POINT (MAP CENTRE AND ZOOM LEVEL)
+setView(lng = mean(poi$longitude),
+        lat = mean(poi$latitude), 
+        zoom = 12) %>%  
+  
+# AIRBNBs
+addMarkers(lng=abnb_tor$longitude, lat=abnb_tor$latitude,
+            icon = airbnbIcon,
+            popup= paste("Total cost: $",
+                          abnb_tor$total_cost)) %>%
+  
+# ART GALLERIES
+addMarkers(lng=galleries$longitude, lat=galleries$latitude,
+            icon = agIcon,
+            popup= paste("Gallery Name: ",
+                          galleries$NAME)) %>%
+  
+# MEAN CENTRE
+addMarkers(lng = mean(galleries$longitude), 
+          lat = mean(galleries$latitude), 
+          icon = mcIcon,
+          popup = "Mean centre") %>%
+  
+# ADD NEIGHBOURHOODS
+addPolygons(data = nbs_sp, 
+            group = nbs_sp$neighbourhood_group,
+            popup = paste("Neighbourhood Name: ", nbs_sp$neighbourhood))
+```
+
+This map shows all of the Airbnbs in Toronto. It also includes the locations of the art galleries in Toronto and their mean center. 
+
+```{r}
+# Mean Centre of Galleries 
+bsc <- "Bay Street Corridor"
+meanCentre <- nbs %>%
+  filter(neighbourhood == bsc)
+
+# Identifying the lowest cost Airbnb within the identified neighbourhood.
+lowCostAirbnb <- abnb_tor %>%
+  filter(neighbourhood_cleansed == bsc) %>%
+  arrange(price) %>%
+  head(1)
+lcAbnb <- lowCostAirbnb
+```
+
+Since we are students on a budget, we want to choose the cheapest Airbnb for our stay. The cheapest cost Airbnb is named **`r lcAbnb$name`** and it will cost **`r lcAbnb$price*5 `** dollars for the 5 night stay and the [Airbnb can be seen here](`r lcAbnb$listing_url`). 
+
+
